@@ -164,7 +164,8 @@
   </div>
 
   <!-- Shortcuts -->
-  <div id="shortcuts" class="flex flex-wrap gap-2 mb-6 md:mb-8"></div>
+  <div id="shortcuts" class="flex flex-wrap gap-2 mb-3" role="group" aria-label="대륙 선택"></div>
+  <div id="continent-cities" class="flex flex-wrap gap-2 mb-6 md:mb-8" aria-live="polite"></div>
 
   <hr class="rule mb-6 md:mb-8">
 
@@ -224,15 +225,53 @@
     storm: { day: ["#4A4257", "#A9A3B4"], night: ["#0C0A16", "#241F33"] }
   };
 
-  // 버튼 라벨은 대륙명이지만, 클릭하면 그 대륙을 대표하는 도시 하나의 날씨로 바로 진입한다
-  // (대륙별 도시 목록 選택 같은 추가 UI 없이, 기존 "원클릭 바로가기" 동작을 그대로 재사용).
-  var SHORTCUTS = [
-    { continent: "아시아",   id: 1835848, name: "서울",   admin1: "서울특별시",       country: "대한민국",     lat: 37.5665,  lon: 126.9780 },
-    { continent: "유럽",     id: 2988507, name: "파리",   admin1: "일드프랑스",       country: "프랑스",       lat: 48.8566,  lon: 2.3522 },
-    { continent: "아메리카", id: 5128581, name: "뉴욕",   admin1: "뉴욕주",           country: "미국",         lat: 40.7128,  lon: -74.0060 },
-    { continent: "아프리카", id: 360630,  name: "카이로", admin1: "카이로주",         country: "이집트",       lat: 30.06263, lon: 31.24967 },
-    { continent: "오세아니아", id: 2147714, name: "시드니", admin1: "뉴사우스웨일스주", country: "오스트레일리아", lat: -33.86785, lon: 151.20732 }
-  ];
+  // 대륙 버튼을 클릭하면 그 대륙의 주요 도시 목록이 바로 아래(#continent-cities)에 열리고,
+  // 그 중 하나를 고르면 기존과 동일하게 바로 날씨를 불러온다. 랜드마크 아이콘과 매칭되도록
+  // 가능한 한 LANDMARKS에 있는 도시로 채웠다(아프리카·오세아니아는 큐레이션된 랜드마크가
+  // 적어 목록이 상대적으로 짧다).
+  var CONTINENTS = {
+    "아시아": [
+      { id: 1835848, name: "서울",     admin1: "서울특별시",   country: "대한민국", lat: 37.5665,  lon: 126.9780 },
+      { id: 1850147, name: "도쿄",     admin1: "도쿄도",       country: "일본",     lat: 35.6895,  lon: 139.6917 },
+      { id: 1816670, name: "베이징",   admin1: "베이징시",     country: "중국",     lat: 39.9075,  lon: 116.3972 },
+      { id: 1796236, name: "상하이",   admin1: "상하이시",     country: "중국",     lat: 31.2222,  lon: 121.4581 },
+      { id: 1819729, name: "홍콩",     admin1: "",             country: "홍콩",     lat: 22.2783,  lon: 114.1747 },
+      { id: 1880252, name: "싱가포르", admin1: "",             country: "싱가포르", lat: 1.2897,   lon: 103.8501 },
+      { id: 1609350, name: "방콕",     admin1: "방콕",         country: "태국",     lat: 13.7540,  lon: 100.5014 },
+      { id: 292223,  name: "두바이",   admin1: "두바이",       country: "아랍에미리트", lat: 25.0773, lon: 55.3093 }
+    ],
+    "유럽": [
+      { id: 2988507, name: "파리",      admin1: "일드프랑스",   country: "프랑스",   lat: 48.8534,  lon: 2.3488 },
+      { id: 2643743, name: "런던",      admin1: "잉글랜드",     country: "영국",     lat: 51.5085,  lon: -0.1257 },
+      { id: 3169070, name: "로마",      admin1: "라치오주",     country: "이탈리아", lat: 41.8919,  lon: 12.5113 },
+      { id: 3128760, name: "바르셀로나", admin1: "카탈루냐",    country: "스페인",   lat: 41.3888,  lon: 2.1590 },
+      { id: 2950159, name: "베를린",    admin1: "베를린",       country: "독일",     lat: 52.5244,  lon: 13.4105 },
+      { id: 264371,  name: "아테네",    admin1: "아티키주",     country: "그리스",   lat: 37.9838,  lon: 23.7278 },
+      { id: 3067696, name: "프라하",    admin1: "프라하",       country: "체코",     lat: 50.0880,  lon: 14.4208 },
+      { id: 3413829, name: "레이캬비크", admin1: "수도권",      country: "아이슬란드", lat: 64.1355, lon: -21.8954 }
+    ],
+    "아메리카": [
+      { id: 5128581, name: "뉴욕",       admin1: "뉴욕주",       country: "미국",   lat: 40.7128,  lon: -74.0060 },
+      { id: 5391959, name: "샌프란시스코", admin1: "캘리포니아주", country: "미국",  lat: 37.7749,  lon: -122.4194 },
+      { id: 5368361, name: "로스앤젤레스", admin1: "캘리포니아주", country: "미국",  lat: 34.0522,  lon: -118.2437 },
+      { id: 4887398, name: "시카고",      admin1: "일리노이주",   country: "미국",  lat: 41.8500,  lon: -87.6501 },
+      { id: 6167865, name: "토론토",      admin1: "온타리오주",   country: "캐나다", lat: 43.7064,  lon: -79.3986 },
+      { id: 3530597, name: "멕시코시티",  admin1: "멕시코시티",   country: "멕시코", lat: 19.4285,  lon: -99.1277 },
+      { id: 3451190, name: "리우데자네이루", admin1: "리우데자네이루주", country: "브라질", lat: -22.9064, lon: -43.1822 }
+    ],
+    "아프리카": [
+      { id: 360630,  name: "카이로",     admin1: "카이로주",         country: "이집트",   lat: 30.0626,  lon: 31.2497 },
+      { id: 3369157, name: "케이프타운", admin1: "웨스턴케이프주",   country: "남아프리카공화국", lat: -33.9258, lon: 18.4232 },
+      { id: 2542997, name: "마라케시",   admin1: "마라케시사피",     country: "모로코",   lat: 31.6342,  lon: -7.9999 },
+      { id: 184745,  name: "나이로비",   admin1: "나이로비현",       country: "케냐",     lat: -1.2833,  lon: 36.8167 }
+    ],
+    "오세아니아": [
+      { id: 2147714, name: "시드니",   admin1: "뉴사우스웨일스주", country: "오스트레일리아", lat: -33.8679, lon: 151.2073 },
+      { id: 2158177, name: "멜버른",   admin1: "빅토리아주",       country: "오스트레일리아", lat: -37.8140, lon: 144.9633 },
+      { id: 2193733, name: "오클랜드", admin1: "오클랜드",         country: "뉴질랜드", lat: -36.8485, lon: 174.7635 }
+    ]
+  };
+  var CONTINENT_NAMES = ["아시아", "유럽", "아메리카", "아프리카", "오세아니아"];
 
   // 랜드마크 실루엣 아이콘 — GeoNames id로 매칭한다(도시명은 언어 파라미터에 따라
   // 번역돼 문자열 매칭이 불안정하므로, 검색 결과의 안정적인 고유 id를 키로 쓴다).
@@ -396,6 +435,7 @@
   var input = document.getElementById("city-input");
   var listbox = document.getElementById("city-listbox");
   var shortcutsEl = document.getElementById("shortcuts");
+  var continentCitiesEl = document.getElementById("continent-cities");
   var inlineErrorEl = document.getElementById("search-inline-error");
 
   /* ---------- State ---------- */
@@ -889,23 +929,63 @@
     }
   });
 
-  /* ---------- Shortcuts ---------- */
+  /* ---------- Continent shortcuts ---------- */
 
-  shortcutsEl.innerHTML = SHORTCUTS.map(function (s, i) {
+  var activeContinent = null;
+
+  shortcutsEl.innerHTML = CONTINENT_NAMES.map(function (name, i) {
     return (
-      '<button type="button" data-shortcut="' + i + '" ' +
-      'aria-label="' + escapeHtml(s.continent) + ' — ' + escapeHtml(s.name) + ' 날씨 보기" ' +
+      '<button type="button" data-continent="' + i + '" aria-expanded="false" aria-controls="continent-cities" ' +
       'class="mono label px-3 py-1.5 border" style="border-color: var(--panel-border-strong);">' +
-      escapeHtml(s.continent) + '</button>'
+      escapeHtml(name) + '</button>'
     );
   }).join("");
 
+  function collapseContinent() {
+    activeContinent = null;
+    continentCitiesEl.innerHTML = "";
+    Array.prototype.forEach.call(shortcutsEl.children, function (b) {
+      b.setAttribute("aria-expanded", "false");
+      b.style.borderColor = "var(--panel-border-strong)";
+    });
+  }
+
+  function openContinent(name, activeBtn) {
+    activeContinent = name;
+    Array.prototype.forEach.call(shortcutsEl.children, function (b) {
+      var isActive = b === activeBtn;
+      b.setAttribute("aria-expanded", isActive ? "true" : "false");
+      b.style.borderColor = isActive ? "var(--accent)" : "var(--panel-border-strong)";
+    });
+
+    var cities = CONTINENTS[name];
+    continentCitiesEl.innerHTML = cities.map(function (c, i) {
+      return (
+        '<button type="button" data-city="' + i + '" ' +
+        'class="mono label px-3 py-1.5 border opacity-80" style="border-color: var(--panel-border);">' +
+        escapeHtml(c.name) + '</button>'
+      );
+    }).join("");
+
+    Array.prototype.forEach.call(continentCitiesEl.children, function (btn, i) {
+      btn.addEventListener("click", function () {
+        var c = cities[i];
+        input.value = c.name;
+        closeListbox();
+        collapseContinent();
+        loadWeather({ id: c.id, name: c.name, admin1: c.admin1, country: c.country, lat: c.lat, lon: c.lon });
+      });
+    });
+  }
+
   Array.prototype.forEach.call(shortcutsEl.children, function (btn, i) {
     btn.addEventListener("click", function () {
-      var s = SHORTCUTS[i];
-      input.value = s.name;
-      closeListbox();
-      loadWeather({ id: s.id, name: s.name, admin1: s.admin1, country: s.country, lat: s.lat, lon: s.lon });
+      var name = CONTINENT_NAMES[i];
+      if (activeContinent === name) {
+        collapseContinent();
+      } else {
+        openContinent(name, btn);
+      }
     });
   });
 
