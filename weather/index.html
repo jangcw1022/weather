@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>기상 관측 — Open-Meteo Weather</title>
+
+<link rel="stylesheet" as="style" crossorigin
+  href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+
+<script src="https://cdn.tailwindcss.com"></script>
+
+<style>
+  :root {
+    --ink: #10151C;
+    --accent: #C77700;
+    --panel-bg: rgba(255,255,255,0.55);
+    --panel-border: rgba(16,21,28,0.14);
+    --panel-border-strong: rgba(16,21,28,0.22);
+  }
+  :root[data-mode="night"] {
+    --ink: #EEF2F6;
+    --accent: #FFB300;
+    --panel-bg: rgba(18,22,30,0.42);
+    --panel-border: rgba(238,242,246,0.16);
+    --panel-border-strong: rgba(238,242,246,0.26);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { height: 100%; }
+
+  body {
+    color: var(--ink);
+    font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Malgun Gothic', sans-serif;
+    background: #DCEAF2;
+    transition: color .9s ease;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace; }
+
+  .label {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+  }
+
+  .panel {
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    transition: background-color .9s ease, border-color .9s ease;
+  }
+
+  .rule { border-color: var(--panel-border); transition: border-color .9s ease; }
+
+  .temp-display {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: clamp(5.5rem, 27vw, 14rem);
+    font-weight: 300;
+    font-variant-numeric: tabular-nums;
+    line-height: .95;
+    letter-spacing: -.02em;
+  }
+
+  .bg-layer {
+    position: fixed;
+    inset: 0;
+    z-index: -10;
+    opacity: 0;
+    transition: opacity .9s ease;
+  }
+  #bg-a { opacity: 1; background: linear-gradient(180deg, #4C9BE0, #DCEAF2); }
+
+  ::selection { background: var(--accent); color: #fff; }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  #city-listbox { scrollbar-width: thin; }
+
+  .day-col { scroll-snap-align: start; }
+  #forecast-track { scroll-snap-type: x proximity; }
+
+  [role="option"][aria-selected="true"] {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+</style>
+</head>
+<body class="min-h-screen">
+
+<div id="bg-a" class="bg-layer"></div>
+<div id="bg-b" class="bg-layer"></div>
+
+<div class="relative mx-auto max-w-3xl px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
+
+  <!-- Header -->
+  <header class="flex items-baseline justify-between mb-6 md:mb-8">
+    <h1 class="text-lg md:text-xl font-medium tracking-tight">기상 관측</h1>
+    <span class="label opacity-60">Open-Meteo</span>
+  </header>
+
+  <!-- Search -->
+  <div class="relative mb-4">
+    <label for="city-input" class="sr-only">도시 이름 검색</label>
+    <input
+      id="city-input"
+      type="text"
+      role="combobox"
+      aria-expanded="false"
+      aria-controls="city-listbox"
+      aria-autocomplete="list"
+      aria-haspopup="listbox"
+      autocomplete="off"
+      placeholder="도시 이름을 한글 또는 영문으로…"
+      class="w-full panel px-4 py-3 text-base placeholder:opacity-50 outline-none rounded-none"
+    >
+    <ul
+      id="city-listbox"
+      role="listbox"
+      aria-label="검색 결과"
+      hidden
+      class="panel absolute left-0 right-0 top-full mt-1 max-h-72 overflow-y-auto z-20 rounded-none divide-y"
+      style="border-color: var(--panel-border);"
+    ></ul>
+    <p id="search-inline-error" class="hidden mt-2 text-sm" role="alert"></p>
+  </div>
+
+  <!-- Shortcuts -->
+  <div id="shortcuts" class="flex flex-wrap gap-2 mb-6 md:mb-8"></div>
+
+  <hr class="rule mb-6 md:mb-8">
+
+  <!-- State-driven content -->
+  <main id="app" aria-live="polite"></main>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---------- Constants ---------- */
+
+  var GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search";
+  var FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
+  var TIMEOUT_MS = 10000;
+
+  var WMO = {
+    0:  { label: "맑음",              day: "☀️", night: "🌙", group: "clear" },
+    1:  { label: "대체로 맑음",        day: "🌤️", night: "🌙", group: "clear" },
+    2:  { label: "부분적으로 흐림",     day: "⛅", night: "☁️", group: "cloud" },
+    3:  { label: "흐림",              day: "☁️", night: "☁️", group: "cloud" },
+    45: { label: "안개",              day: "🌫️", night: "🌫️", group: "fog" },
+    48: { label: "서리 안개",          day: "🌫️", night: "🌫️", group: "fog" },
+    51: { label: "약한 이슬비",         day: "🌦️", night: "🌧️", group: "rain" },
+    53: { label: "이슬비",             day: "🌦️", night: "🌧️", group: "rain" },
+    55: { label: "강한 이슬비",         day: "🌧️", night: "🌧️", group: "rain" },
+    56: { label: "약한 어는 이슬비",     day: "🌧️", night: "🌧️", group: "rain" },
+    57: { label: "어는 이슬비",         day: "🌧️", night: "🌧️", group: "rain" },
+    61: { label: "약한 비",            day: "🌦️", night: "🌧️", group: "rain" },
+    63: { label: "비",                day: "🌧️", night: "🌧️", group: "rain" },
+    65: { label: "강한 비",            day: "🌧️", night: "🌧️", group: "rain" },
+    66: { label: "약한 어는 비",        day: "🌧️", night: "🌧️", group: "rain" },
+    67: { label: "어는 비",            day: "🌧️", night: "🌧️", group: "rain" },
+    71: { label: "약한 눈",            day: "🌨️", night: "🌨️", group: "snow" },
+    73: { label: "눈",                day: "🌨️", night: "🌨️", group: "snow" },
+    75: { label: "강한 눈",            day: "❄️", night: "❄️", group: "snow" },
+    77: { label: "싸락눈",             day: "🌨️", night: "🌨️", group: "snow" },
+    80: { label: "약한 소나기",         day: "🌦️", night: "🌧️", group: "rain" },
+    81: { label: "소나기",             day: "🌧️", night: "🌧️", group: "rain" },
+    82: { label: "강한 소나기",         day: "🌧️", night: "🌧️", group: "rain" },
+    85: { label: "약한 소낙눈",         day: "🌨️", night: "🌨️", group: "snow" },
+    86: { label: "강한 소낙눈",         day: "❄️", night: "❄️", group: "snow" },
+    95: { label: "뇌우",              day: "⛈️", night: "⛈️", group: "storm" },
+    96: { label: "우박을 동반한 뇌우",   day: "⛈️", night: "⛈️", group: "storm" },
+    99: { label: "강한 뇌우",          day: "⛈️", night: "⛈️", group: "storm" }
+  };
+  var WMO_DEFAULT = { label: "관측값 없음", day: "❔", night: "❔", group: "cloud" };
+
+  var GRADIENTS = {
+    clear: { day: ["#4C9BE0", "#DCEAF2"], night: ["#0B1533", "#1C2A4A"] },
+    cloud: { day: ["#93A9BC", "#DFE5E9"], night: ["#11182A", "#2A3242"] },
+    fog:   { day: ["#C3C7C8", "#E9EAEA"], night: ["#1A1D24", "#333941"] },
+    rain:  { day: ["#5F7488", "#C4CED6"], night: ["#0A1220", "#212C3B"] },
+    snow:  { day: ["#A9BFD2", "#F0F4F7"], night: ["#121C2E", "#2E3A4D"] },
+    storm: { day: ["#4A4257", "#A9A3B4"], night: ["#0C0A16", "#241F33"] }
+  };
+
+  var SHORTCUTS = [
+    { name: "서울",      admin1: "서울특별시",     country: "대한민국",   lat: 37.5665,  lon: 126.9780 },
+    { name: "도쿄",      admin1: "도쿄도",         country: "일본",       lat: 35.6762,  lon: 139.6503 },
+    { name: "뉴욕",      admin1: "뉴욕주",         country: "미국",       lat: 40.7128,  lon: -74.0060 },
+    { name: "파리",      admin1: "일드프랑스",     country: "프랑스",     lat: 48.8566,  lon: 2.3522 },
+    { name: "레이캬비크", admin1: "수도권",         country: "아이슬란드", lat: 64.1466,  lon: -21.9426 }
+  ];
+
+  var WEEKDAY_KO = ["일", "월", "화", "수", "목", "금", "토"];
+
+  // Open-Meteo 지오코딩 API는 한글 스크립트로 된 검색어를 인식하지 못한다(language=ko는
+  // 결과 표시 언어만 바꿀 뿐 질의어 매칭에는 영향이 없음). 주요 도시는 영문 질의어로
+  // 치환해 검색이 실제로 동작하도록 한다.
+  var KO_ALIASES = {
+    "서울": "Seoul", "부산": "Busan", "인천": "Incheon", "대구": "Daegu", "대전": "Daejeon",
+    "광주": "Gwangju", "울산": "Ulsan", "수원": "Suwon", "제주": "Jeju", "전주": "Jeonju",
+    "여수": "Yeosu", "강릉": "Gangneung", "춘천": "Chuncheon", "청주": "Cheongju", "포항": "Pohang",
+    "창원": "Changwon", "목포": "Mokpo", "안동": "Andong", "경주": "Gyeongju", "속초": "Sokcho",
+
+    "도쿄": "Tokyo", "오사카": "Osaka", "교토": "Kyoto", "삿포로": "Sapporo", "후쿠오카": "Fukuoka",
+    "나고야": "Nagoya", "요코하마": "Yokohama", "고베": "Kobe", "오키나와": "Okinawa",
+
+    "베이징": "Beijing", "상하이": "Shanghai", "광저우": "Guangzhou", "선전": "Shenzhen",
+    "청두": "Chengdu", "시안": "Xi'an", "홍콩": "Hong Kong", "마카오": "Macau", "타이베이": "Taipei",
+    "가오슝": "Kaohsiung",
+
+    "싱가포르": "Singapore", "방콕": "Bangkok", "치앙마이": "Chiang Mai", "하노이": "Hanoi",
+    "호치민": "Ho Chi Minh City", "다낭": "Da Nang", "자카르타": "Jakarta", "발리": "Denpasar",
+    "쿠알라룸푸르": "Kuala Lumpur", "마닐라": "Manila", "세부": "Cebu", "프놈펜": "Phnom Penh",
+    "비엔티안": "Vientiane", "양곤": "Yangon", "뉴델리": "New Delhi", "뭄바이": "Mumbai",
+    "델리": "Delhi", "방갈로르": "Bangalore", "콜카타": "Kolkata", "카트만두": "Kathmandu",
+
+    "두바이": "Dubai", "아부다비": "Abu Dhabi", "도하": "Doha", "리야드": "Riyadh",
+    "이스탄불": "Istanbul", "앙카라": "Ankara", "테헤란": "Tehran", "텔아비브": "Tel Aviv",
+    "예루살렘": "Jerusalem", "암만": "Amman",
+
+    "런던": "London", "파리": "Paris", "로마": "Rome", "밀라노": "Milan", "베니스": "Venice",
+    "베를린": "Berlin", "뮌헨": "Munich", "프랑크푸르트": "Frankfurt", "함부르크": "Hamburg",
+    "마드리드": "Madrid", "바르셀로나": "Barcelona", "리스본": "Lisbon", "포르투": "Porto",
+    "암스테르담": "Amsterdam", "브뤼셀": "Brussels", "취리히": "Zurich", "제네바": "Geneva",
+    "빈": "Vienna", "비엔나": "Vienna", "프라하": "Prague", "부다페스트": "Budapest",
+    "바르샤바": "Warsaw", "모스크바": "Moscow", "상트페테르부르크": "Saint Petersburg",
+    "아테네": "Athens", "스톡홀름": "Stockholm", "오슬로": "Oslo", "코펜하겐": "Copenhagen",
+    "헬싱키": "Helsinki", "레이캬비크": "Reykjavik", "더블린": "Dublin", "에든버러": "Edinburgh",
+
+    "뉴욕": "New York", "로스앤젤레스": "Los Angeles", "샌프란시스코": "San Francisco",
+    "라스베이거스": "Las Vegas", "라스베가스": "Las Vegas", "시카고": "Chicago", "시애틀": "Seattle",
+    "보스턴": "Boston", "워싱턴": "Washington", "마이애미": "Miami", "호놀룰루": "Honolulu",
+    "토론토": "Toronto", "밴쿠버": "Vancouver", "몬트리올": "Montreal",
+    "멕시코시티": "Mexico City", "칸쿤": "Cancun",
+
+    "상파울루": "Sao Paulo", "리우데자네이루": "Rio de Janeiro", "부에노스아이레스": "Buenos Aires",
+    "리마": "Lima", "보고타": "Bogota", "산티아고": "Santiago",
+
+    "시드니": "Sydney", "멜버른": "Melbourne", "브리즈번": "Brisbane", "오클랜드": "Auckland",
+    "웰링턴": "Wellington",
+
+    "카이로": "Cairo", "케이프타운": "Cape Town", "요하네스버그": "Johannesburg",
+    "나이로비": "Nairobi", "마라케시": "Marrakesh", "카사블랑카": "Casablanca"
+  };
+
+  function resolveSearchTerm(query) {
+    return KO_ALIASES[query.trim()] || query;
+  }
+
+  /* ---------- DOM refs ---------- */
+
+  var app = document.getElementById("app");
+  var input = document.getElementById("city-input");
+  var listbox = document.getElementById("city-listbox");
+  var shortcutsEl = document.getElementById("shortcuts");
+  var inlineErrorEl = document.getElementById("search-inline-error");
+
+  /* ---------- State ---------- */
+
+  var searchTimer = null;
+  var currentResults = [];
+  var activeIndex = -1;
+  var lastPlace = null;
+  var lastSearchQuery = "";
+  var lastFailedAction = null;
+  var clockInterval = null;
+  var activeBgLayer = "a";
+  var reqSeq = 0; // guards against out-of-order async responses
+
+  /* ---------- Utilities ---------- */
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function wmoOf(code) { return WMO[code] || WMO_DEFAULT; }
+
+  function fetchWithTimeout(url) {
+    var controller = new AbortController();
+    var id = setTimeout(function () { controller.abort(); }, TIMEOUT_MS);
+    return fetch(url, { signal: controller.signal }).finally(function () {
+      clearTimeout(id);
+    });
+  }
+
+  function stopClock() {
+    if (clockInterval) { clearInterval(clockInterval); clockInterval = null; }
+  }
+
+  function startClock(utcOffsetSeconds, tzAbbrev) {
+    stopClock();
+    function tick() {
+      var localMs = Date.now() + utcOffsetSeconds * 1000;
+      var d = new Date(localMs);
+      var hh = String(d.getUTCHours()).padStart(2, "0");
+      var mm = String(d.getUTCMinutes()).padStart(2, "0");
+      var ss = String(d.getUTCSeconds()).padStart(2, "0");
+      var el = document.getElementById("local-time");
+      if (el) el.textContent = hh + ":" + mm + ":" + ss + " " + tzAbbrev;
+    }
+    tick();
+    clockInterval = setInterval(tick, 1000);
+  }
+
+  function setBackground(group, isDay) {
+    var g = GRADIENTS[group] || GRADIENTS.cloud;
+    var stops = isDay ? g.day : g.night;
+    var gradient = "linear-gradient(180deg, " + stops[0] + ", " + stops[1] + ")";
+    var nextId = activeBgLayer === "a" ? "bg-b" : "bg-a";
+    var prevId = activeBgLayer === "a" ? "bg-a" : "bg-b";
+    var nextEl = document.getElementById(nextId);
+    var prevEl = document.getElementById(prevId);
+    nextEl.style.background = gradient;
+    nextEl.style.opacity = "1";
+    prevEl.style.opacity = "0";
+    activeBgLayer = activeBgLayer === "a" ? "b" : "a";
+    document.documentElement.dataset.mode = isDay ? "day" : "night";
+  }
+
+  function koreanWeekday(dateStr) {
+    var d = new Date(dateStr + "T00:00:00Z");
+    return WEEKDAY_KO[d.getUTCDay()];
+  }
+
+  /* ---------- Rendering: state screens ---------- */
+
+  function renderIdle() {
+    app.innerHTML =
+      '<div class="flex flex-col items-center justify-center text-center py-20 md:py-28 gap-4">' +
+        '<span class="text-6xl" role="img" aria-label="나침반">🧭</span>' +
+        '<p class="label opacity-60">도시를 검색하거나 바로가기를 선택하세요</p>' +
+      '</div>';
+  }
+
+  function renderLoading() {
+    app.innerHTML =
+      '<div aria-busy="true" aria-label="날씨 정보를 불러오는 중">' +
+        '<div class="panel px-5 py-6 md:px-8 md:py-8 mb-6 md:mb-8">' +
+          '<div class="flex justify-between mb-6">' +
+            '<div class="h-4 w-28 bg-current opacity-10 animate-pulse"></div>' +
+            '<div class="h-4 w-20 bg-current opacity-10 animate-pulse"></div>' +
+          '</div>' +
+          '<div class="h-24 md:h-32 w-2/3 bg-current opacity-10 animate-pulse mb-4"></div>' +
+          '<div class="h-4 w-24 bg-current opacity-10 animate-pulse mb-6"></div>' +
+          '<div class="h-px w-full bg-current opacity-10 mb-6"></div>' +
+          '<div class="flex gap-6">' +
+            '<div class="h-4 w-16 bg-current opacity-10 animate-pulse"></div>' +
+            '<div class="h-4 w-16 bg-current opacity-10 animate-pulse"></div>' +
+            '<div class="h-4 w-16 bg-current opacity-10 animate-pulse"></div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="panel px-5 py-6 md:px-8 md:py-8">' +
+          '<div class="h-4 w-24 bg-current opacity-10 animate-pulse mb-6"></div>' +
+          '<div class="flex gap-3 overflow-hidden">' +
+            Array(7).fill('<div class="flex-none w-[62px] h-32 bg-current opacity-10 animate-pulse"></div>').join('') +
+          '</div>' +
+        '</div>' +
+      '</div>';
+  }
+
+  function renderNotFound(query) {
+    app.innerHTML =
+      '<div class="flex flex-col items-center text-center py-20 md:py-28 gap-4">' +
+        '<span class="text-6xl" role="img" aria-label="돋보기">🔍</span>' +
+        '<p>"' + escapeHtml(query) + '"에 대한 검색 결과가 없습니다</p>' +
+        '<p class="label opacity-60">영문 도시명으로 다시 검색해보세요</p>' +
+        '<button id="notfound-retry" type="button" class="mono label px-4 py-2 border" style="border-color: var(--panel-border-strong);">다시 검색</button>' +
+      '</div>';
+    var btn = document.getElementById("notfound-retry");
+    btn.addEventListener("click", function () {
+      input.focus();
+      input.select();
+    });
+  }
+
+  function renderError(message) {
+    app.innerHTML =
+      '<div role="alert" class="flex flex-col items-center text-center py-20 md:py-28 gap-4">' +
+        '<span class="text-6xl" role="img" aria-label="경고">⚠️</span>' +
+        '<p>' + escapeHtml(message) + '</p>' +
+        '<button id="error-retry" type="button" class="mono label px-4 py-2 border" style="border-color: var(--panel-border-strong);">다시 시도</button>' +
+      '</div>';
+    var btn = document.getElementById("error-retry");
+    btn.addEventListener("click", function () {
+      if (lastFailedAction) lastFailedAction();
+    });
+  }
+
+  function renderResult(place, data) {
+    var cur = data.current;
+    var daily = data.daily;
+    var wc = wmoOf(cur.weather_code);
+    var isDay = !!cur.is_day;
+    var icon = isDay ? wc.day : wc.night;
+    var temp = Math.round(cur.temperature_2m);
+    var feels = Math.round(cur.apparent_temperature);
+    var humidity = Math.round(cur.relative_humidity_2m);
+    var wind = Math.round(cur.wind_speed_10m);
+    var lat = Number(data.latitude).toFixed(2);
+    var lon = Number(data.longitude).toFixed(2);
+    var latDir = data.latitude >= 0 ? "N" : "S";
+    var lonDir = data.longitude >= 0 ? "E" : "W";
+
+    var subtitle = [place.admin1, place.country].filter(Boolean).map(escapeHtml).join(" · ");
+
+    var days = daily.time.map(function (dateStr, i) {
+      return {
+        date: dateStr,
+        code: daily.weather_code[i],
+        max: daily.temperature_2m_max[i],
+        min: daily.temperature_2m_min[i]
+      };
+    });
+    var weekMax = Math.max.apply(null, daily.temperature_2m_max);
+    var weekMin = Math.min.apply(null, daily.temperature_2m_min);
+    var span = (weekMax - weekMin) || 1;
+
+    var dayCols = days.map(function (d, i) {
+      var dwc = wmoOf(d.code);
+      var label = i === 0 ? "오늘" : koreanWeekday(d.date);
+      var topPct = ((weekMax - d.max) / span) * 100;
+      var heightPct = Math.max(3, ((d.max - d.min) / span) * 100);
+      var isToday = i === 0;
+      return (
+        '<div class="day-col flex-none w-[62px] md:w-auto flex flex-col items-center gap-2 ' + (isToday ? '' : '') + '">' +
+          '<span class="label ' + (isToday ? '' : 'opacity-60') + '" style="' + (isToday ? 'color: var(--accent);' : '') + '">' + escapeHtml(label) + '</span>' +
+          '<span class="text-xl" role="img" aria-label="' + escapeHtml(dwc.label) + '">' + dwc.day + '</span>' +
+          '<span class="mono text-sm">' + Math.round(d.max) + '°</span>' +
+          '<div class="relative w-1.5 h-24 rounded-none bg-current opacity-10">' +
+            '<div class="absolute left-0 right-0 rounded-none" style="top:' + topPct + '%; height:' + heightPct + '%; background: var(--accent); opacity: 0.8;"></div>' +
+          '</div>' +
+          '<span class="mono text-sm opacity-60">' + Math.round(d.min) + '°</span>' +
+        '</div>'
+      );
+    }).join("");
+
+    app.innerHTML =
+      '<section aria-label="현재 날씨" class="panel px-5 py-6 md:px-8 md:py-8 mb-6 md:mb-8">' +
+        '<div class="flex items-baseline justify-between flex-wrap gap-1 mb-1">' +
+          '<h2 class="text-xl font-medium">' + escapeHtml(place.name) + '</h2>' +
+          '<span class="label opacity-60">' + subtitle + '</span>' +
+        '</div>' +
+        '<p class="mono text-sm opacity-50 mb-6">' +
+          lat + '°' + latDir + ' ' + lon + '°' + lonDir + '&nbsp;&nbsp;' +
+          '<span id="local-time">--:--:--</span>' +
+        '</p>' +
+        '<div class="flex items-center justify-between mb-2">' +
+          '<div class="temp-display">' + temp + '°</div>' +
+          '<span class="text-6xl md:text-7xl" role="img" aria-label="' + escapeHtml(wc.label) + '">' + icon + '</span>' +
+        '</div>' +
+        '<p class="mb-6 opacity-80">' + escapeHtml(wc.label) + '</p>' +
+        '<hr class="rule mb-6">' +
+        '<div class="flex gap-6 md:gap-10 flex-wrap">' +
+          '<div><div class="label opacity-60 mb-1">체감</div><div class="mono">' + feels + '°</div></div>' +
+          '<div><div class="label opacity-60 mb-1">습도</div><div class="mono">' + humidity + '%</div></div>' +
+          '<div><div class="label opacity-60 mb-1">바람</div><div class="mono">' + wind + 'km/h</div></div>' +
+        '</div>' +
+      '</section>' +
+      '<section aria-label="7일 예보" class="panel px-5 py-6 md:px-8 md:py-8">' +
+        '<div class="flex items-baseline justify-between mb-6">' +
+          '<h2 class="label opacity-60">7일 예보</h2>' +
+          '<span class="label opacity-40">최저 / 최고</span>' +
+        '</div>' +
+        '<div id="forecast-track" class="flex gap-3 overflow-x-auto pb-1 md:grid md:grid-cols-7 md:gap-3 md:overflow-visible">' +
+          dayCols +
+        '</div>' +
+      '</section>';
+
+    setBackground(wc.group, isDay);
+    startClock(data.utc_offset_seconds, data.timezone_abbreviation || "");
+  }
+
+  /* ---------- State machine ---------- */
+
+  function setState(name, payload) {
+    if (name !== "result") stopClock();
+    switch (name) {
+      case "idle": renderIdle(); break;
+      case "loading": renderLoading(); break;
+      case "notfound": renderNotFound(payload.query); break;
+      case "error": renderError(payload.message); break;
+      case "result": renderResult(payload.place, payload.data); break;
+    }
+  }
+
+  /* ---------- Geocoding ---------- */
+
+  function geocode(query, language) {
+    var url = new URL(GEOCODE_URL);
+    url.searchParams.set("name", query);
+    url.searchParams.set("count", "8");
+    url.searchParams.set("language", language);
+    url.searchParams.set("format", "json");
+    return fetchWithTimeout(url.toString()).then(function (res) {
+      if (!res.ok) throw new Error("geocode_http_" + res.status);
+      return res.json();
+    }).then(function (data) {
+      return data.results || [];
+    });
+  }
+
+  function showInlineSearchError(query) {
+    inlineErrorEl.textContent = "검색 중 오류가 발생했습니다.";
+    inlineErrorEl.classList.remove("hidden");
+    var retryLink = document.createElement("button");
+    retryLink.type = "button";
+    retryLink.className = "underline ml-2";
+    retryLink.textContent = "다시 시도";
+    retryLink.addEventListener("click", function () { runSearch(query); });
+    inlineErrorEl.appendChild(retryLink);
+  }
+
+  function hideInlineSearchError() {
+    inlineErrorEl.classList.add("hidden");
+    inlineErrorEl.textContent = "";
+  }
+
+  function runSearch(query) {
+    hideInlineSearchError();
+    var seq = ++reqSeq;
+    var term = resolveSearchTerm(query);
+    geocode(term, "ko").then(function (results) {
+      if (results.length === 0) return geocode(term, "en");
+      return results;
+    }).then(function (results) {
+      if (seq !== reqSeq) return; // superseded by a newer input
+      if (results.length === 0) {
+        closeListbox();
+        lastSearchQuery = query;
+        setState("notfound", { query: query });
+        return;
+      }
+      showListbox(results);
+    }).catch(function () {
+      if (seq !== reqSeq) return;
+      closeListbox();
+      showInlineSearchError(query);
+    });
+  }
+
+  /* ---------- Listbox / combobox ---------- */
+
+  function optionLine2(r) {
+    return [r.admin1, r.country].filter(Boolean).join(" · ");
+  }
+
+  function showListbox(results) {
+    currentResults = results;
+    activeIndex = -1;
+    listbox.innerHTML = results.map(function (r, i) {
+      return (
+        '<li id="opt-' + i + '" role="option" aria-selected="false" data-index="' + i + '" ' +
+        'class="px-4 py-2 cursor-pointer hover:bg-black/5">' +
+          '<div>' + escapeHtml(r.name) + '</div>' +
+          '<div class="label opacity-50">' + escapeHtml(optionLine2(r)) + '</div>' +
+        '</li>'
+      );
+    }).join("");
+    listbox.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+
+    Array.prototype.forEach.call(listbox.children, function (li, i) {
+      li.addEventListener("mousedown", function (e) {
+        e.preventDefault();
+        selectPlace(currentResults[i]);
+      });
+    });
+  }
+
+  function closeListbox() {
+    listbox.hidden = true;
+    listbox.innerHTML = "";
+    currentResults = [];
+    activeIndex = -1;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+  }
+
+  function updateActiveDescendant() {
+    Array.prototype.forEach.call(listbox.children, function (li, i) {
+      var active = i === activeIndex;
+      li.setAttribute("aria-selected", active ? "true" : "false");
+      if (active) {
+        input.setAttribute("aria-activedescendant", li.id);
+        li.scrollIntoView({ block: "nearest" });
+      }
+    });
+    if (activeIndex === -1) input.removeAttribute("aria-activedescendant");
+  }
+
+  function selectPlace(result) {
+    closeListbox();
+    var place = {
+      name: result.name,
+      admin1: result.admin1 || "",
+      country: result.country || "",
+      lat: result.latitude,
+      lon: result.longitude
+    };
+    input.value = result.name;
+    loadWeather(place);
+  }
+
+  /* ---------- Weather fetch ---------- */
+
+  function buildForecastUrl(lat, lon) {
+    var url = new URL(FORECAST_URL);
+    url.searchParams.set("latitude", lat);
+    url.searchParams.set("longitude", lon);
+    url.searchParams.set("timezone", "auto");
+    url.searchParams.set("forecast_days", "7");
+    url.searchParams.set("current", "temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code,is_day");
+    url.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min");
+    return url.toString();
+  }
+
+  function loadWeather(place) {
+    lastPlace = place;
+    var seq = ++reqSeq;
+    setState("loading");
+    fetchWithTimeout(buildForecastUrl(place.lat, place.lon)).then(function (res) {
+      if (!res.ok) throw new Error("HTTP " + res.status + " 오류로 날씨 정보를 불러오지 못했습니다.");
+      return res.json();
+    }).then(function (data) {
+      if (!data.current || !data.daily) throw new Error("날씨 응답 형식이 올바르지 않습니다.");
+      if (seq !== reqSeq) return;
+      setState("result", { place: place, data: data });
+    }).catch(function (err) {
+      if (seq !== reqSeq) return;
+      lastFailedAction = function () { loadWeather(place); };
+      var msg = err && err.name === "AbortError"
+        ? "요청 시간이 초과되었습니다."
+        : (err && err.message) || "날씨 정보를 불러오지 못했습니다.";
+      setState("error", { message: msg });
+    });
+  }
+
+  /* ---------- Event wiring ---------- */
+
+  input.addEventListener("input", function (e) {
+    var q = e.target.value.trim();
+    hideInlineSearchError();
+    clearTimeout(searchTimer);
+    if (q.length < 1) {
+      closeListbox();
+      return;
+    }
+    searchTimer = setTimeout(function () { runSearch(q); }, 300);
+  });
+
+  input.addEventListener("keydown", function (e) {
+    if (listbox.hidden) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      activeIndex = Math.min(activeIndex + 1, currentResults.length - 1);
+      updateActiveDescendant();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      activeIndex = Math.max(activeIndex - 1, 0);
+      updateActiveDescendant();
+    } else if (e.key === "Enter") {
+      if (activeIndex >= 0 && currentResults[activeIndex]) {
+        e.preventDefault();
+        selectPlace(currentResults[activeIndex]);
+      }
+    } else if (e.key === "Escape") {
+      closeListbox();
+    }
+  });
+
+  document.addEventListener("click", function (e) {
+    if (!listbox.hidden && !e.target.closest("#city-listbox") && e.target !== input) {
+      closeListbox();
+    }
+  });
+
+  /* ---------- Shortcuts ---------- */
+
+  shortcutsEl.innerHTML = SHORTCUTS.map(function (s, i) {
+    return (
+      '<button type="button" data-shortcut="' + i + '" ' +
+      'class="mono label px-3 py-1.5 border" style="border-color: var(--panel-border-strong);">' +
+      escapeHtml(s.name) + '</button>'
+    );
+  }).join("");
+
+  Array.prototype.forEach.call(shortcutsEl.children, function (btn, i) {
+    btn.addEventListener("click", function () {
+      var s = SHORTCUTS[i];
+      input.value = s.name;
+      closeListbox();
+      loadWeather({ name: s.name, admin1: s.admin1, country: s.country, lat: s.lat, lon: s.lon });
+    });
+  });
+
+  /* ---------- Init ---------- */
+
+  setState("idle");
+})();
+</script>
+</body>
+</html>
