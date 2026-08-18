@@ -113,6 +113,43 @@
     background: color-mix(in srgb, var(--accent) 16%, transparent);
   }
 
+  .globe-stage {
+    position: relative;
+    width: min(78vw, 320px);
+    height: min(78vw, 320px);
+    margin: 0 auto;
+    touch-action: none;
+  }
+  .globe-sphere {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: radial-gradient(circle at 32% 28%,
+      color-mix(in srgb, var(--accent) 22%, var(--panel-bg)) 0%,
+      var(--panel-bg) 55%,
+      color-mix(in srgb, var(--ink) 18%, transparent) 100%);
+    border: 1px solid var(--panel-border-strong);
+    box-shadow: inset 0 0 30px color-mix(in srgb, var(--ink) 12%, transparent);
+    transition: background-color .9s ease, border-color .9s ease;
+  }
+  .globe-graticule { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+  .globe-graticule path { fill: none; stroke: var(--ink); stroke-width: 1; opacity: .28; }
+  .globe-markers { position: absolute; inset: 0; }
+  .globe-marker {
+    position: absolute;
+    left: 0; top: 0;
+    width: 26px;
+    height: 26px;
+    margin: -13px 0 0 -13px;
+    color: var(--ink);
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    will-change: transform, opacity;
+  }
+  .globe-marker svg { width: 100%; height: 100%; }
+
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
       animation-duration: 0.001ms !important;
@@ -133,7 +170,9 @@
 
   <!-- Header -->
   <header class="flex items-baseline justify-between mb-6 md:mb-8">
-    <h1 class="text-lg md:text-xl font-medium tracking-tight">기상 관측</h1>
+    <h1 class="text-lg md:text-xl font-medium tracking-tight m-0">
+      <button type="button" id="app-title" class="cursor-pointer bg-transparent p-0 border-0">기상 관측</button>
+    </h1>
     <span class="label opacity-60">Open-Meteo</span>
   </header>
 
@@ -365,6 +404,18 @@
     2542997: { label: "쿠투비아 미나렛", svg: landmarkSvg('<path d="M22 58 L22 14 L42 14 L42 58Z"/><line x1="22" y1="24" x2="42" y2="24"/><line x1="22" y1="34" x2="42" y2="34"/><line x1="22" y1="44" x2="42" y2="44"/><path d="M26 14 L38 14 L32 4Z"/><circle cx="32" cy="2" r="1.6"/>') }
   };
 
+  // 지구본 마커 — CONTINENTS(도시 좌표)와 LANDMARKS(아이콘)를 id로 조인해서 만든다.
+  // 새 배열을 손으로 채우지 않고, 랜드마크 아이콘이 있는 도시만 걸러서 파생시킨다.
+  var GLOBE_CITIES = (function () {
+    var out = [];
+    CONTINENT_NAMES.forEach(function (name) {
+      CONTINENTS[name].forEach(function (c) {
+        if (LANDMARKS[c.id]) out.push(c);
+      });
+    });
+    return out;
+  })();
+
   // 실사 배경 사진 — 20개 핵심 도시만 dawn/day/sunset/night 4장씩 큐레이션.
   // Wikimedia Commons(공개 라이선스) 출처, id는 LANDMARKS와 동일한 GeoNames id.
   // 없는 도시/시간대는 자동으로 GRADIENTS 배경으로 대체된다.
@@ -437,6 +488,7 @@
   var shortcutsEl = document.getElementById("shortcuts");
   var continentCitiesEl = document.getElementById("continent-cities");
   var inlineErrorEl = document.getElementById("search-inline-error");
+  var titleBtn = document.getElementById("app-title");
 
   /* ---------- State ---------- */
 
@@ -567,12 +619,198 @@
 
   /* ---------- Rendering: state screens ---------- */
 
-  function renderIdle() {
+  /* ---------- Globe home screen ---------- */
+
+  var DEG2RAD = Math.PI / 180;
+  var globeRotLon = -20; // degrees, wraps mod 360 — spin around vertical axis
+  var globeRotLat = 15;  // degrees, clamped [-70, 70] — tilt around horizontal axis
+  var GLOBE_LAT_MIN = -70, GLOBE_LAT_MAX = 70;
+  var GLOBE_LON_SENS = 0.25; // deg rotated per px of input delta
+  var GLOBE_LAT_SENS = 0.25;
+  var GLOBE_ROT_STEP = 6;    // deg rotated per arrow-key press
+  var GLOBE_CULL_Z = -0.12;  // hide markers once clearly on the far side
+  var GRATICULE_MERIDIANS = [-150, -120, -90, -60, -30, 0, 30, 60, 90, 120, 150, 180];
+  var GRATICULE_PARALLELS = [-60, -30, 0, 30, 60];
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  function clamp01(v) { return clamp(v, 0, 1); }
+
+  // 단위구 위의 점(lat,lon)을 현재 회전 상태(globeRotLon/globeRotLat)에 맞춰 회전시킨
+  // x,y,z를 반환한다. x,y ∈ [-1,1], z>0이면 시점을 향한 앞면.
+  function projectPoint(latDeg, lonDeg) {
+    var phi = latDeg * DEG2RAD;
+    var lambda = lonDeg * DEG2RAD;
+    var x0 = Math.cos(phi) * Math.sin(lambda);
+    var y0 = Math.sin(phi);
+    var z0 = Math.cos(phi) * Math.cos(lambda);
+
+    var lon = globeRotLon * DEG2RAD; // 경도 회전 (수직축)
+    var x1 = x0 * Math.cos(lon) + z0 * Math.sin(lon);
+    var y1 = y0;
+    var z1 = -x0 * Math.sin(lon) + z0 * Math.cos(lon);
+
+    var lat = globeRotLat * DEG2RAD; // 위도 틸트 (수평축)
+    var y2 = y1 * Math.cos(lat) - z1 * Math.sin(lat);
+    var z2 = y1 * Math.sin(lat) + z1 * Math.cos(lat);
+
+    return { x: x1, y: y2, z: z2 };
+  }
+
+  // 위경선을 닫힌형 타원 공식이 아니라 projectPoint를 여러 지점 샘플링해 SVG path로 그린다
+  // (틸트가 0이 아닌 순간 위경선이 축 정렬 타원이 아니게 되므로, 마커와 동일한 회전 함수를
+  // 그대로 재사용하는 편이 기하학적으로 항상 일치하고 더 간단하다). 뒷면(z<0) 구간은 별도
+  // subpath로 끊어서 숨긴다.
+  function sampleLineToPath(fn, steps, R, cx, cy) {
+    var d = "", drawing = false;
+    for (var i = 0; i <= steps; i++) {
+      var p = fn(i / steps);
+      if (p.z < 0) { drawing = false; continue; }
+      var sx = cx + p.x * R, sy = cy - p.y * R;
+      d += (drawing ? "L" : "M") + sx.toFixed(1) + " " + sy.toFixed(1) + " ";
+      drawing = true;
+    }
+    return d;
+  }
+
+  function buildGraticuleD(R, cx, cy) {
+    var d = "";
+    GRATICULE_MERIDIANS.forEach(function (lon) {
+      d += sampleLineToPath(function (t) { return projectPoint(-90 + t * 180, lon); }, 30, R, cx, cy);
+    });
+    GRATICULE_PARALLELS.forEach(function (lat) {
+      d += sampleLineToPath(function (t) { return projectPoint(lat, t * 360 - 180); }, 60, R, cx, cy);
+    });
+    return d;
+  }
+
+  function updateGlobeTransforms() {
+    var stageEl = document.getElementById("globe-stage");
+    if (!stageEl) return; // 이미 다른 화면으로 전환된 뒤 예약된 갱신일 수 있음
+    var R = stageEl.clientWidth / 2;
+    var cx = R, cy = R;
+
+    var graticuleSvg = stageEl.querySelector(".globe-graticule");
+    graticuleSvg.setAttribute("viewBox", "0 0 " + (R * 2) + " " + (R * 2));
+    graticuleSvg.innerHTML = '<path d="' + buildGraticuleD(R, cx, cy) + '"/>';
+
+    var markersEl = stageEl.querySelector(".globe-markers");
+    Array.prototype.forEach.call(markersEl.children, function (btn, i) {
+      var c = GLOBE_CITIES[i];
+      var p = projectPoint(c.lat, c.lon);
+      if (p.z < GLOBE_CULL_Z) {
+        btn.style.display = "none";
+        return;
+      }
+      btn.style.display = "";
+      var dx = cx + p.x * R, dy = cy - p.y * R;
+      var scale = 0.55 + 0.45 * clamp01(p.z);
+      var opacity = clamp01(p.z * 1.3 + 0.15);
+      btn.style.transform = "translate(" + dx.toFixed(1) + "px," + dy.toFixed(1) + "px) scale(" + scale.toFixed(2) + ")";
+      btn.style.opacity = opacity.toFixed(2);
+      btn.style.pointerEvents = p.z > 0 ? "auto" : "none";
+    });
+  }
+
+  var globeFrameRequested = false;
+  function scheduleGlobeUpdate() {
+    if (globeFrameRequested) return;
+    globeFrameRequested = true;
+    requestAnimationFrame(function () {
+      globeFrameRequested = false;
+      updateGlobeTransforms();
+    });
+  }
+
+  function rotateGlobe(dLon, dLat) {
+    globeRotLon = ((globeRotLon + dLon) % 360 + 360) % 360;
+    globeRotLat = clamp(globeRotLat + dLat, GLOBE_LAT_MIN, GLOBE_LAT_MAX);
+    scheduleGlobeUpdate();
+  }
+
+  function onGlobeWheel(e) {
+    e.preventDefault();
+    rotateGlobe(e.deltaX * GLOBE_LON_SENS, -e.deltaY * GLOBE_LAT_SENS);
+  }
+
+  var globeTouch = null;
+  function onGlobeTouchStart(e) {
+    if (e.touches.length !== 1) return;
+    globeTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }
+  function onGlobeTouchMove(e) {
+    if (!globeTouch) return;
+    e.preventDefault();
+    var t = e.touches[0];
+    var dx = t.clientX - globeTouch.x;
+    var dy = t.clientY - globeTouch.y;
+    globeTouch = { x: t.clientX, y: t.clientY };
+    rotateGlobe(dx * GLOBE_LON_SENS, dy * GLOBE_LAT_SENS);
+  }
+  function onGlobeTouchEnd() {
+    globeTouch = null;
+  }
+
+  function onGlobeKeydown(e) {
+    if (e.key === "ArrowLeft") { e.preventDefault(); rotateGlobe(-GLOBE_ROT_STEP, 0); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); rotateGlobe(GLOBE_ROT_STEP, 0); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); rotateGlobe(0, GLOBE_ROT_STEP); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); rotateGlobe(0, -GLOBE_ROT_STEP); }
+  }
+
+  function onGlobeResize() {
+    if (!document.getElementById("globe-stage")) {
+      window.removeEventListener("resize", onGlobeResize);
+      return;
+    }
+    updateGlobeTransforms();
+  }
+
+  function renderGlobe() {
     app.innerHTML =
-      '<div class="flex flex-col items-center justify-center text-center py-20 md:py-28 gap-4">' +
-        '<span class="text-6xl" role="img" aria-label="나침반">🧭</span>' +
-        '<p class="label opacity-60">도시를 검색하거나 바로가기를 선택하세요</p>' +
+      '<div class="flex flex-col items-center gap-4 py-10 md:py-14">' +
+        '<p class="label opacity-60 text-center">스크롤하거나 드래그하여 지구본을 돌려보세요 · 랜드마크를 눌러 날씨 보기</p>' +
+        '<div id="globe-stage" class="globe-stage" tabindex="0" role="group" ' +
+          'aria-label="지구본 — 스크롤 또는 드래그로 회전, 랜드마크를 눌러 날씨 보기">' +
+          '<div class="globe-sphere" aria-hidden="true"></div>' +
+          '<svg class="globe-graticule" aria-hidden="true"></svg>' +
+          '<div class="globe-markers"></div>' +
+        '</div>' +
       '</div>';
+
+    var stageEl = document.getElementById("globe-stage");
+    var markersEl = stageEl.querySelector(".globe-markers");
+
+    markersEl.innerHTML = GLOBE_CITIES.map(function (c, i) {
+      return '<button type="button" class="globe-marker" data-idx="' + i +
+        '" aria-label="' + escapeHtml(c.name) + ' 날씨 보기">' + LANDMARKS[c.id].svg + '</button>';
+    }).join("");
+
+    Array.prototype.forEach.call(markersEl.children, function (btn, i) {
+      btn.addEventListener("click", function () {
+        var c = GLOBE_CITIES[i];
+        input.value = c.name;
+        loadWeather({ id: c.id, name: c.name, admin1: c.admin1, country: c.country, lat: c.lat, lon: c.lon });
+      });
+    });
+
+    stageEl.addEventListener("wheel", onGlobeWheel, { passive: false });
+    stageEl.addEventListener("touchstart", onGlobeTouchStart, { passive: true });
+    stageEl.addEventListener("touchmove", onGlobeTouchMove, { passive: false });
+    stageEl.addEventListener("touchend", onGlobeTouchEnd);
+    stageEl.addEventListener("touchcancel", onGlobeTouchEnd);
+    stageEl.addEventListener("keydown", onGlobeKeydown);
+
+    updateGlobeTransforms();
+    window.addEventListener("resize", onGlobeResize);
+  }
+
+  function goHome() {
+    input.value = "";
+    hideInlineSearchError();
+    closeListbox();
+    collapseContinent();
+    setBackgroundGradient("clear", true);
+    setState("globe");
   }
 
   function renderLoading() {
@@ -729,7 +967,7 @@
   function setState(name, payload) {
     if (name !== "result") stopClock();
     switch (name) {
-      case "idle": renderIdle(); break;
+      case "globe": renderGlobe(); break;
       case "loading": renderLoading(); break;
       case "notfound": renderNotFound(payload.query); break;
       case "error": renderError(payload.message); break;
@@ -991,7 +1229,9 @@
 
   /* ---------- Init ---------- */
 
-  setState("idle");
+  titleBtn.addEventListener("click", goHome);
+
+  setState("globe");
 })();
 </script>
 </body>
